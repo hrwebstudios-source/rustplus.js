@@ -30,14 +30,21 @@
   "homepage": "https://github.com/liamcottle/rustplus.js#readme",
   "dependencies": {
     "@liamcottle/push-receiver": "^0.0.3",
-    "axios": "^1.2.2",
+    "axios": "^1.7.9",
     "chrome-launcher": "^0.15.0",
     "command-line-args": "^5.2.0",
     "command-line-usage": "^6.1.1",
-    "express": "^4.17.1",
+    "express": "^4.21.2",
     "jimp": "^0.22.7",
     "protobufjs": "^7.1.2",
     "uuid": "^9.0.0",
-    "ws": "^8.3.0"
+    "ws": "^8.18.0"
+  },
+  "overrides": {
+    "form-data": "^4.0.1",
+    "tough-cookie": "^4.1.4",
+    "cookie": "^0.7.2",
+    "path-to-regexp": "^0.1.12",
+    "send": "^0.19.0"
   }
 }

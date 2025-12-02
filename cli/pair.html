@@ -1,48 +1,179 @@
 <html lang="en">
 <head>
     <title>RustPlus Pairing</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            padding: 20px;
+            text-align: center;
+        }
+        .status {
+            margin: 20px 0;
+            padding: 10px;
+            background: #f0f0f0;
+            border-radius: 5px;
+        }
+        .error {
+            color: red;
+            margin-top: 20px;
+        }
+    </style>
 </head>
 <body>
-<div>To pair rustplus.js with Rust+, you must allow popup windows. You may need to refresh this page after enabling popups.</div>
+<div class="status">To pair rustplus.js with Rust+, you must allow popup windows. You may need to refresh this page after enabling popups.</div>
+<div id="status" class="status">Waiting for authentication...</div>
+<div id="error" class="error"></div>
 <script type="text/javascript">
+
+    var popupWindow = null;
+    var handlerInterval = null;
+    var port = window.location.port || '3000';
 
     /**
      * Launch Rust+ login website in a popup window.
      */
-    var popupWindow = window.open("https://companion-rust.facepunch.com/login", "", "");
-
-    /**
-     * Each time the popup window changes origins (rust+ -> steam -> rust+), our changes to the window object are reset.
-     * So, every 250ms check if our handler is not registered, and register it if needed.
-     */
-    var handlerInterval = setInterval(function() {
-        if(popupWindow.ReactNativeWebView === undefined){
-            console.log("registering ReactNativeWebView.postMessage handler");
-            popupWindow.ReactNativeWebView = {
-
-                /**
-                 * Rust+ login website calls ReactNativeWebView.postMessage after successfully logging in with Steam.
-                 * @param message json string with SteamId and Token
-                 */
-                postMessage: function(message) {
-
-                    // we no longer need the handler
-                    clearInterval(handlerInterval);
-
-                    // parse json message
-                    var auth = JSON.parse(message);
-
-                    // send the Token back to pair.js in the main window
-                    window.location.href = "http://localhost:3000/callback?token=" + encodeURIComponent(auth.Token);
-
-                    // close the popup window
-                    popupWindow.close();
-
-                },
-
-            };
+    function openLoginWindow() {
+        popupWindow = window.open("https://companion-rust.facepunch.com/login", "rustplus_login", "width=800,height=600");
+        
+        if (!popupWindow) {
+            document.getElementById('error').textContent = 'Popup blocked! Please allow popups and refresh this page.';
+            return;
         }
-    }, 250);
+
+        document.getElementById('status').textContent = 'Login window opened. Please complete authentication in the popup.';
+
+        /**
+         * Each time the popup window changes origins (rust+ -> steam -> rust+), our changes to the window object are reset.
+         * So, every 250ms check if our handler is not registered, and register it if needed.
+         */
+        handlerInterval = setInterval(function() {
+            try {
+                // Check if popup is still open
+                if (popupWindow.closed) {
+                    clearInterval(handlerInterval);
+                    document.getElementById('status').textContent = 'Popup window was closed.';
+                    return;
+                }
+
+                // Try to access the popup window (will fail if cross-origin)
+                if (popupWindow.ReactNativeWebView === undefined) {
+                    try {
+                        // Inject ReactNativeWebView handler with more properties to make it look more authentic
+                        Object.defineProperty(popupWindow, 'ReactNativeWebView', {
+                            value: {
+                                /**
+                                 * Rust+ login website calls ReactNativeWebView.postMessage after successfully logging in with Steam.
+                                 * @param message json string with SteamId and Token
+                                 */
+                                postMessage: function(message) {
+                                    console.log("Received message from Rust+:", message);
+                                    
+                                    // we no longer need the handler
+                                    clearInterval(handlerInterval);
+
+                                    try {
+                                        // parse json message
+                                        var auth = JSON.parse(message);
+                                        
+                                        if (auth && auth.Token) {
+                                            document.getElementById('status').textContent = 'Authentication successful! Redirecting...';
+                                            
+                                            // send the Token back to pair.js in the main window
+                                            window.location.href = "http://localhost:" + port + "/callback?token=" + encodeURIComponent(auth.Token);
+
+                                            // close the popup window
+                                            if (popupWindow && !popupWindow.closed) {
+                                                popupWindow.close();
+                                            }
+                                        } else {
+                                            throw new Error("Token not found in auth response");
+                                        }
+                                    } catch (parseError) {
+                                        console.error("Error parsing auth message:", parseError);
+                                        document.getElementById('error').textContent = 'Error parsing authentication response: ' + parseError.message;
+                                    }
+                                },
+                            },
+                            writable: false,
+                            configurable: false
+                        });
+                        
+                        // Also try to intercept any localStorage or sessionStorage changes
+                        try {
+                            var originalSetItem = popupWindow.localStorage.setItem;
+                            popupWindow.localStorage.setItem = function(key, value) {
+                                if (key && value && (key.includes('token') || key.includes('Token') || key.includes('auth') || key.includes('Auth'))) {
+                                    console.log("Detected token in localStorage:", key, value);
+                                    try {
+                                        var tokenData = JSON.parse(value);
+                                        if (tokenData && tokenData.Token) {
+                                            clearInterval(handlerInterval);
+                                            window.location.href = "http://localhost:" + port + "/callback?token=" + encodeURIComponent(tokenData.Token);
+                                            if (popupWindow && !popupWindow.closed) {
+                                                popupWindow.close();
+                                            }
+                                        }
+                                    } catch (e) {
+                                        // Not JSON, might be the token directly
+                                        if (value.length > 20) {
+                                            clearInterval(handlerInterval);
+                                            window.location.href = "http://localhost:" + port + "/callback?token=" + encodeURIComponent(value);
+                                            if (popupWindow && !popupWindow.closed) {
+                                                popupWindow.close();
+                                            }
+                                        }
+                                    }
+                                }
+                                return originalSetItem.apply(this, arguments);
+                            };
+                        } catch (e) {
+                            // Can't intercept localStorage (cross-origin)
+                        }
+                        
+                        console.log("ReactNativeWebView handler registered");
+                    } catch (e) {
+                        // Cross-origin error - this is expected when on different domains
+                        // The handler will be registered once we're back on the rust+ domain
+                    }
+                }
+            } catch (e) {
+                // Cross-origin access error - expected during Steam login redirect
+                // Continue trying to inject the handler
+            }
+        }, 250);
+
+        // Also listen for postMessage events (fallback method)
+        window.addEventListener('message', function(event) {
+            // Only accept messages from Rust+ domain
+            if (event.origin === 'https://companion-rust.facepunch.com') {
+                try {
+                    var data = typeof event.data === 'string' ? JSON.parse(event.data) : event.data;
+                    if (data && data.Token) {
+                        clearInterval(handlerInterval);
+                        document.getElementById('status').textContent = 'Authentication successful! Redirecting...';
+                        window.location.href = "http://localhost:" + port + "/callback?token=" + encodeURIComponent(data.Token);
+                        if (popupWindow && !popupWindow.closed) {
+                            popupWindow.close();
+                        }
+                    }
+                } catch (e) {
+                    console.error("Error handling postMessage:", e);
+                }
+            }
+        }, false);
+    }
+
+    // Open login window when page loads
+    openLoginWindow();
+
+    // Add a timeout to show manual entry option if authentication takes too long
+    setTimeout(function() {
+        if (handlerInterval) {
+            var manualLink = document.createElement('div');
+            manualLink.innerHTML = '<p style="margin-top: 20px;"><a href="/manual" style="color: #0066cc;">Having trouble? Try manual token entry</a></p>';
+            document.body.appendChild(manualLink);
+        }
+    }, 30000); // Show after 30 seconds
 
 </script>
 </body>
